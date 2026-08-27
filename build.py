@@ -23,6 +23,13 @@ ffi.cdef("""
     typedef int32_t i32;
     typedef size_t usize;
 
+    typedef struct rsa_key rsa_key;
+    typedef struct rsa_keygen rsa_keygen;
+
+    rsa_keygen *rsa_keygen_start(u32 bits, u32 e, i32 threads);
+    rsa_key *rsa_keygen_join(rsa_keygen *kg);
+    void rsa_free(rsa_key *k);
+
     i32 rsa_is_probable_prime(const u8 *n_be, usize len, i32 rounds);
     usize rsa_small_prime_count(void);
     u32 rsa_sieve_limit(void);

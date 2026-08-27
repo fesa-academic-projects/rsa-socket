@@ -91,6 +91,21 @@ i32 rsa_online_cores(void) {
   return n > 0 ? (i32)n : 1;
 }
 
+/* Odd, with the top two bits set so that p*q has exactly 2*bits bits. */
+static i32 random_odd(mpz_t out, u32 bits, FILE *ur) {
+  u8 buf[512];
+  usize nbytes = bits / 8;
+
+  if (bits % 8 || nbytes == 0 || nbytes > sizeof buf)
+    return -1;
+  if (fread(buf, 1, nbytes, ur) != nbytes)
+    return -1;
+  buf[0] |= 0xC0;
+  buf[nbytes - 1] |= 0x01;
+  mpz_import(out, nbytes, 1, 1, 0, 0, buf);
+  return 0;
+}
+
 static i32 random_base(mpz_t out, FILE *ur) {
   u8 buf[32];
 
@@ -155,4 +170,242 @@ i32 rsa_is_probable_prime(const u8 *n_be, usize len, i32 rounds) {
     fclose(ur);
   mpz_clears(n, nm1, d, x, a, NULL);
   return ok;
+}
+
+/* Extended Euclid, so the key schedule owes nothing to mpz_invert. */
+static i32 mod_inverse(mpz_t out, const mpz_t a, const mpz_t m) {
+  mpz_t r0, r1, s0, s1, q;
+  i32 ok;
+
+  mpz_init_set(r0, m);
+  mpz_init_set(r1, a);
+  mpz_init_set_ui(s0, 0);
+  mpz_init_set_ui(s1, 1);
+  mpz_init(q);
+  while (mpz_sgn(r1) != 0) {
+    mpz_fdiv_q(q, r0, r1);
+    mpz_submul(r0, q, r1);
+    mpz_swap(r0, r1);
+    mpz_submul(s0, q, s1);
+    mpz_swap(s0, s1);
+  }
+  ok = mpz_cmp_ui(r0, 1) == 0;
+  if (ok)
+    mpz_mod(out, s0, m);
+  mpz_clears(r0, r1, s0, s1, q, NULL);
+  return ok;
+}
+
+struct rsa_key {
+  mpz_t n, e, d, p, q, dp, dq, qinv;
+  u64 cand, sieved;
+  i32 threads;
+};
+
+struct rsa_keygen {
+  u32 bits; /* per prime */
+  u32 e;
+  i32 nthreads;
+  pthread_t *tid;
+  pthread_mutex_t lock;
+  mpz_t found[2];
+  i32 nfound;
+  _Atomic i32 stop;
+  u64 cand, sieved;
+};
+
+/* Fermat's method factors n at once when |p-q| is small, so the primes come
+ * from independent intervals and this says so rather than assuming it. */
+static i32 far_enough(const mpz_t a, const mpz_t b, u32 bits) {
+  mpz_t d;
+  i32 ok;
+
+  mpz_init(d);
+  mpz_sub(d, a, b);
+  mpz_abs(d, d);
+  ok = mpz_sizeinbase(d, 2) > bits / 2;
+  mpz_clear(d);
+  return ok;
+}
+
+static void *worker(void *arg) {
+  struct rsa_keygen *kg = arg;
+  FILE *ur;
+  mpz_t base, cand, nm1, d, x, a;
+  u8 *sieve;
+  u64 local_cand = 0, local_sieved = 0;
+  u32 window;
+
+  pthread_once(&g_once, build_small_primes);
+  window = g_window;
+  ur = fopen("/dev/urandom", "rb");
+  sieve = malloc(window);
+  if (!ur || !sieve || !g_small) {
+    if (ur)
+      fclose(ur);
+    free(sieve);
+    return NULL;
+  }
+  mpz_inits(base, cand, nm1, d, x, a, NULL);
+
+  while (!kg->stop) {
+    usize j;
+    u32 i;
+
+    if (random_odd(base, kg->bits, ur) != 0)
+      break;
+
+    /* base + 2i = 0 (mod p) when i = -base * 2^-1, and 2^-1 is (p+1)/2. */
+    memset(sieve, 1, window);
+    for (j = 0; j < g_small_n; j++) {
+      u64 p = g_small[j];
+      u64 r = mpz_fdiv_ui(base, (unsigned long)p);
+      u64 i0 = ((p - r) % p) * ((p + 1) / 2) % p;
+      for (; i0 < window; i0 += p)
+        sieve[i0] = 0;
+    }
+
+    for (i = 0; i < window && !kg->stop; i++) {
+      i32 r, ok;
+
+      if (!sieve[i]) {
+        local_sieved++;
+        continue;
+      }
+      mpz_add_ui(cand, base, (unsigned long)(2u * i));
+      mpz_sub_ui(nm1, cand, 1);
+      /* d exists only when gcd(e, phi) = 1, and e is prime. */
+      if (mpz_fdiv_ui(nm1, (unsigned long)kg->e) == 0)
+        continue;
+
+      {
+        mp_bitcnt_t s = mpz_scan1(nm1, 0);
+        mpz_fdiv_q_2exp(d, nm1, s);
+
+        /* Base 2 removes nearly every composite for one exponentiation. */
+        local_cand++;
+        mpz_set_ui(a, 2);
+        if (!mr_round(cand, nm1, d, s, a, x))
+          continue;
+
+        ok = 1;
+        for (r = 0; r < EXTRA_ROUNDS && ok; r++) {
+          if (random_base(a, ur) != 0) {
+            ok = 0;
+            break;
+          }
+          mpz_mod(a, a, nm1);
+          if (mpz_cmp_ui(a, 2) < 0)
+            mpz_set_ui(a, 2);
+          ok = mr_round(cand, nm1, d, s, a, x);
+        }
+        if (!ok)
+          continue;
+      }
+
+      pthread_mutex_lock(&kg->lock);
+      if (kg->nfound == 0 || (kg->nfound == 1 && far_enough(cand, kg->found[0], kg->bits))) {
+        mpz_set(kg->found[kg->nfound++], cand);
+        if (kg->nfound == 2)
+          kg->stop = 1;
+      }
+      pthread_mutex_unlock(&kg->lock);
+      break; /* a fresh interval for the next prime, never a neighbour */
+    }
+  }
+
+  pthread_mutex_lock(&kg->lock);
+  kg->cand += local_cand;
+  kg->sieved += local_sieved;
+  pthread_mutex_unlock(&kg->lock);
+
+  mpz_clears(base, cand, nm1, d, x, a, NULL);
+  free(sieve);
+  fclose(ur);
+  return NULL;
+}
+
+rsa_keygen *rsa_keygen_start(u32 bits, u32 e, i32 threads) {
+  struct rsa_keygen *kg;
+  i32 i;
+
+  if (bits < 512 || bits % 16 || e < 3)
+    return NULL;
+  kg = calloc(1, sizeof *kg);
+  if (!kg)
+    return NULL;
+  kg->bits = bits / 2;
+  kg->e = e;
+  kg->nthreads = threads > 0 ? threads : rsa_online_cores();
+  mpz_inits(kg->found[0], kg->found[1], NULL);
+  pthread_mutex_init(&kg->lock, NULL);
+  kg->tid = calloc((usize)kg->nthreads, sizeof *kg->tid);
+  if (!kg->tid) {
+    free(kg);
+    return NULL;
+  }
+  for (i = 0; i < kg->nthreads; i++) {
+    if (pthread_create(&kg->tid[i], NULL, worker, kg) != 0) {
+      kg->nthreads = i;
+      break;
+    }
+  }
+  return kg;
+}
+
+rsa_key *rsa_keygen_join(rsa_keygen *kg) {
+  rsa_key *k;
+  mpz_t phi, pm1, qm1;
+  i32 i;
+
+  if (!kg)
+    return NULL;
+  for (i = 0; i < kg->nthreads; i++)
+    pthread_join(kg->tid[i], NULL);
+
+  k = NULL;
+  if (kg->nfound == 2) {
+    k = calloc(1, sizeof *k);
+  }
+  if (k) {
+    mpz_inits(k->n, k->e, k->d, k->p, k->q, k->dp, k->dq, k->qinv, NULL);
+    mpz_inits(phi, pm1, qm1, NULL);
+
+    mpz_set(k->p, kg->found[0]);
+    mpz_set(k->q, kg->found[1]);
+    if (mpz_cmp(k->p, k->q) < 0) /* the CRT below wants p > q */
+      mpz_swap(k->p, k->q);
+
+    mpz_mul(k->n, k->p, k->q); /* etapa 1: N = p.q            */
+    mpz_sub_ui(pm1, k->p, 1);
+    mpz_sub_ui(qm1, k->q, 1);
+    mpz_mul(phi, pm1, qm1);              /* etapa 2: phi(N)             */
+    mpz_set_ui(k->e, kg->e);             /* etapa 3: e coprime to phi   */
+    if (!mod_inverse(k->d, k->e, phi)) { /* etapa 4: e.d = 1 mod phi(N) */
+      mpz_clears(k->n, k->e, k->d, k->p, k->q, k->dp, k->dq, k->qinv, NULL);
+      free(k);
+      k = NULL;
+    } else {
+      mpz_mod(k->dp, k->d, pm1);
+      mpz_mod(k->dq, k->d, qm1);
+      mod_inverse(k->qinv, k->q, k->p);
+      k->cand = kg->cand;
+      k->sieved = kg->sieved;
+      k->threads = kg->nthreads;
+    }
+    mpz_clears(phi, pm1, qm1, NULL);
+  }
+
+  mpz_clears(kg->found[0], kg->found[1], NULL);
+  pthread_mutex_destroy(&kg->lock);
+  free(kg->tid);
+  free(kg);
+  return k;
+}
+
+void rsa_free(rsa_key *k) {
+  if (!k)
+    return;
+  mpz_clears(k->n, k->e, k->d, k->p, k->q, k->dp, k->dq, k->qinv, NULL);
+  free(k);
 }
