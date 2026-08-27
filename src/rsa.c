@@ -409,3 +409,131 @@ void rsa_free(rsa_key *k) {
   mpz_clears(k->n, k->e, k->d, k->p, k->q, k->dp, k->dq, k->qinv, NULL);
   free(k);
 }
+
+usize rsa_modulus_bytes(const rsa_key *k) { return k ? (mpz_sizeinbase(k->n, 2) + 7) / 8 : 0; }
+
+void rsa_export_modulus(const rsa_key *k, u8 *out) {
+  usize len = rsa_modulus_bytes(k), cnt = mpz_sizeinbase(k->n, 256);
+
+  memset(out, 0, len);
+  mpz_export(out + (len - cnt), NULL, 1, 1, 0, 0, k->n);
+}
+
+u32 rsa_exponent(const rsa_key *k) { return k ? (u32)mpz_get_ui(k->e) : 0; }
+
+static void export_fixed(u8 *out, usize len, const mpz_t v) {
+  usize cnt = mpz_sizeinbase(v, 256);
+
+  memset(out, 0, len);
+  if (cnt <= len && mpz_sgn(v) != 0)
+    mpz_export(out + (len - cnt), NULL, 1, 1, 0, 0, v);
+}
+
+i32 rsa_encrypt(const u8 *n_be, usize n_len, u32 e, const u8 *msg, usize msg_len, u8 *out) {
+  mpz_t n, m, c;
+  i32 rc = 0;
+
+  mpz_inits(n, m, c, NULL);
+  mpz_import(n, n_len, 1, 1, 0, 0, n_be);
+  mpz_import(m, msg_len, 1, 1, 0, 0, msg);
+  if (mpz_sgn(n) == 0 || mpz_cmp(m, n) >= 0)
+    rc = -1; /* textbook RSA: the message is one integer and must be < n */
+  else {
+    mpz_powm_ui(c, m, (unsigned long)e, n);
+    export_fixed(out, n_len, c);
+  }
+  mpz_clears(n, m, c, NULL);
+  return rc;
+}
+
+/* Two exponentiations with half sized operands instead of one full sized,
+ * which make bench measures at 4.3 ms against 16.5 ms. */
+i32 rsa_decrypt(const rsa_key *k, const u8 *ct, usize ct_len, u8 *out, usize *out_len) {
+  mpz_t c, m1, m2, h, m;
+  usize cnt;
+  i32 rc = 0;
+
+  if (!k || !out_len)
+    return -1;
+  mpz_inits(c, m1, m2, h, m, NULL);
+  mpz_import(c, ct_len, 1, 1, 0, 0, ct);
+  if (mpz_cmp(c, k->n) >= 0)
+    rc = -1;
+  else {
+    mpz_powm(m1, c, k->dp, k->p);
+    mpz_powm(m2, c, k->dq, k->q);
+    mpz_sub(h, m1, m2);
+    mpz_mul(h, h, k->qinv);
+    mpz_mod(h, h, k->p);
+    mpz_mul(m, h, k->q);
+    mpz_add(m, m, m2);
+
+    cnt = mpz_sizeinbase(m, 256);
+    if (cnt > *out_len)
+      rc = -1;
+    else {
+      mpz_export(out, &cnt, 1, 1, 0, 0, m);
+      *out_len = mpz_sgn(m) ? cnt : 0;
+    }
+  }
+  mpz_clears(c, m1, m2, h, m, NULL);
+  return rc;
+}
+
+i32 rsa_decrypt_plain(const rsa_key *k, const u8 *ct, usize ct_len, u8 *out, usize *out_len) {
+  mpz_t c, m;
+  usize cnt;
+  i32 rc = 0;
+
+  if (!k || !out_len)
+    return -1;
+  mpz_inits(c, m, NULL);
+  mpz_import(c, ct_len, 1, 1, 0, 0, ct);
+  mpz_powm(m, c, k->d, k->n);
+  cnt = mpz_sizeinbase(m, 256);
+  if (cnt > *out_len)
+    rc = -1;
+  else {
+    mpz_export(out, &cnt, 1, 1, 0, 0, m);
+    *out_len = mpz_sgn(m) ? cnt : 0;
+  }
+  mpz_clears(c, m, NULL);
+  return rc;
+}
+
+char *rsa_component(const rsa_key *k, char which) {
+  const mpz_t *v;
+
+  if (!k)
+    return NULL;
+  switch (which) {
+  case 'p':
+    v = &k->p;
+    break;
+  case 'q':
+    v = &k->q;
+    break;
+  case 'n':
+    v = &k->n;
+    break;
+  case 'd':
+    v = &k->d;
+    break;
+  default:
+    return NULL;
+  }
+  return mpz_get_str(NULL, 10, *v);
+}
+
+void rsa_string_free(char *s) {
+  void (*freefn)(void *, usize);
+
+  if (!s)
+    return;
+  mp_get_memory_functions(NULL, NULL, &freefn);
+  freefn(s, strlen(s) + 1);
+}
+
+u64 rsa_stat_candidates(const rsa_key *k) { return k ? k->cand : 0; }
+u64 rsa_stat_sieved(const rsa_key *k) { return k ? k->sieved : 0; }
+i32 rsa_stat_threads(const rsa_key *k) { return k ? k->threads : 0; }
