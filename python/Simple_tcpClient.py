@@ -16,6 +16,10 @@ T0 = time.perf_counter()  # etapa: RTT starts at the first line of the code
 # Key generation starts before the socket is opened and is only waited for
 # when Bob actually needs Alice's public key, so the handshake and the search
 # for the primes run at the same time.
+#
+# Nothing is printed between T0 and T1 but the answer itself. The keys and the
+# ciphertext come out afterwards: four thousand digits on a terminal cost more
+# than the whole exchange.
 
 import os
 import sys
@@ -45,30 +49,19 @@ t_connect = time.perf_counter()
 # Etapa 4: Bob's public key arrives in plain text.
 _, blob = wire.recv_frame(clientSocket, wire.PUBKEY)
 bob_e, bob_n = rsa.parse_public(blob)
-print(f"Bob's public key: e = {bob_e}, n = {len(bob_n) * 8} bits")
-print(f"  n = {int.from_bytes(bob_n, 'big')}")
 
 # The message goes out before our own key is ready: Bob can already decrypt it.
 payload = rsa.encrypt(blob, sentence.encode("utf-8"))
 wire.send_frame(clientSocket, wire.MESSAGE, payload)
 t_sent = time.perf_counter()
-print(f"\nSent to Server (encrypted, {len(payload)} bytes):")
-print(f"  {payload[:16].hex(' ')} ... {payload[-16:].hex(' ')}")
 
 # Now Alice's own key is needed, so that Bob can encrypt the answer.
 key = rsa.keygen_join(keygen)
 t_key = time.perf_counter()
 wire.send_frame(clientSocket, wire.PUBKEY, key.public)
-print(f"\nAlice's public key: e = {key.e}, n = {key.size * 8} bits")
-print(f"  p = {key.component('p')}")
-print(f"  q = {key.component('q')}")
-print(f"  n = {key.component('n')}")
-print(f"  d = {key.component('d')}")
 
 _, answer = wire.recv_frame(clientSocket, wire.REPLY)
 t_reply = time.perf_counter()
-print(f"\nReceived from Server (encrypted, {len(answer)} bytes):")
-print(f"  {answer[:16].hex(' ')} ... {answer[-16:].hex(' ')}")
 
 text = key.decrypt(answer).decode("utf-8")
 print("Received from Make Upper Case Server: ", text)
@@ -85,10 +78,25 @@ print(
     f"  import + connect {(t_connect - T0) * 1000:8.1f} ms   (overlapped with the search)"
 )
 print(
-    f"  key exchange     {(t_sent - t_connect) * 1000:8.1f} ms   (overlapped with the search)"
+    f"  encrypt and send {(t_sent - t_connect) * 1000:8.1f} ms   (overlapped with the search)"
 )
 print(f"  answer round     {(t_reply - t_key) * 1000:8.1f} ms")
 print(f"  decrypt (CRT)    {(T1 - t_reply) * 1000:8.1f} ms")
+
+# Everything below is evidence, printed with the clock already stopped.
+print(f"\nBob's public key: e = {bob_e}, n = {len(bob_n) * 8} bits")
+print(f"  n = {int.from_bytes(bob_n, 'big')}")
+
+print(f"\nAlice's public key: e = {key.e}, n = {key.size * 8} bits")
+print(f"  p = {key.component('p')}")
+print(f"  q = {key.component('q')}")
+print(f"  n = {key.component('n')}")
+print(f"  d = {key.component('d')}")
+
+print(f"\nSent to Server (encrypted, {len(payload)} bytes):")
+print(f"  {payload[:16].hex(' ')} ... {payload[-16:].hex(' ')}")
+print(f"Received from Server (encrypted, {len(answer)} bytes):")
+print(f"  {answer[:16].hex(' ')} ... {answer[-16:].hex(' ')}")
 
 # Bob's turn: Alice runs the same service for him.
 _, incoming = wire.recv_frame(clientSocket, wire.MESSAGE)
