@@ -1,11 +1,14 @@
 # Original class files
 
-`Simple_tcpClient.py` and `Simple_tcpServer.py` exactly as handed out in
-`/code/python/socket_tcp/`, kept untouched. Step 1 of the assignment is
-captured with these: the sentence travels in clear text and Follow TCP
-Stream shows it.
+`desafio_rsa.pdf` is the handout, and `Simple_tcpClient.py` and
+`Simple_tcpServer.py` are the socket files from `/code/python/socket_tcp/`,
+all exactly as given. Step 1 of the assignment is captured with these two
+scripts: the sentence travels in clear text and Follow TCP Stream shows it.
 
-The modified versions, with Caesar and Diffie-Hellman added, are in
-`../python/`. Diff them to see what changed:
+The modified versions, with RSA added, are in `../python/`. Diff them to see
+what changed:
 
-    diff original/Simple_tcpServer.py python/Simple_tcpServer.py
+    make diff
+
+These files are the professor's work and are not covered by the license at
+the root of the repository.
