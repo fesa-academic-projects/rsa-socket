@@ -214,51 +214,45 @@ Step 5, the same service with RSA, six frames on one connection:
 | frame | t | direction | payload | what it is |
 |---|---|---|---|---|
 | 14 | 0.0 ms | Bob to Alice | 521 B | `0x01` Bob's public key, in the clear |
-| 16 | 1.0 ms | Alice to Bob | 517 B | `0x02` the sentence, encrypted |
-| 18 | 63.5 ms | Alice to Bob | 521 B | `0x01` Alice's public key, in the clear |
-| 20 | 64.4 ms | Bob to Alice | 517 B | `0x03` the answer, encrypted |
-| 21 | 66.5 ms | Bob to Alice | 517 B | `0x02` Bob's own sentence, encrypted |
-| 23 | 131.1 ms | Alice to Bob | 517 B | `0x03` Alice's answer, encrypted |
+| 16 | 0.5 ms | Alice to Bob | 517 B | `0x02` the sentence, encrypted |
+| 18 | 123.3 ms | Alice to Bob | 521 B | `0x01` Alice's public key, in the clear |
+| 20 | 123.8 ms | Bob to Alice | 517 B | `0x03` the answer, encrypted |
+| 21 | 124.4 ms | Bob to Alice | 517 B | `0x02` Bob's own sentence, encrypted |
+| 23 | 138.3 ms | Alice to Bob | 517 B | `0x03` Alice's answer, encrypted |
 
-The gaps say where the time goes. Bob answers 0.9 ms after Alice's public key
-lands, and Alice puts her message on the wire 1.0 ms after Bob's key arrives.
-The 62.5 ms between frames 16 and 18 is the search for her primes, and it is
-the whole round trip. Nothing else on this timeline is worth optimising.
+The gaps say where the time goes. Alice puts her message on the wire 0.5 ms
+after Bob's key arrives, Bob answers 0.5 ms after her key lands, and his own
+sentence follows 0.5 ms later. The 122.8 ms between frames 16 and 18 is the
+search for her primes, and it is the entire round trip. The 14.0 ms before
+frame 23 is Alice decrypting Bob's sentence and encrypting the answer, two
+operations of the size the table above gives.
 
-The 64.6 ms before frame 23 is not the protocol either: on that run Alice was
-still printing her key dump when Bob's sentence arrived. The client now writes
-all of it after the connection closes, which is what the last commit changed.
+Nothing on this timeline is worth optimising except the search, and that is
+the point of everything in `rsa.c`.
 
-The public keys are readable in `Follow TCP Stream`. Frame 14 carries the type
-byte `0x01`, a length of 516, then four bytes `00 01 00 01`, which is 65537,
-then 512 bytes of modulus. Read as a big-endian integer they give exactly the
-4096 bit `n` that Bob printed, which is step 4 shown rather than asserted.
+The public keys are readable in `Follow TCP Stream`. Frames 14 and 18 each
+carry the type byte `0x01`, a length of 516, then four bytes `00 01 00 01`,
+which is 65537, then 512 bytes of modulus. Read as a big-endian integer those
+bytes give exactly the 4096 bit `n` the two programs print, which is step 4
+shown rather than asserted.
 
-The client on that run reported:
-
-```
-RTT: 82.8 ms
-  key generation       73.9 ms   (4 threads, 58 Miller-Rabin tests, 683 candidates removed by the sieve)
-  import + connect      9.6 ms   (overlapped with the search)
-  encrypt and send      1.9 ms   (overlapped with the search)
-  answer round          1.1 ms
-  decrypt (CRT)         7.8 ms
-```
-
-That run was a lucky draw: 58 Miller-Rabin tests against a mean of 116, so the
-search finished in half its usual time. The honest figure is the distribution,
-not the best sample. With four threads the key pair takes 114 ms at the median
-and 130 ms at the mean, which puts the round trip near 125 ms typical and 83 ms
-at the good end. The spread is not noise in the measurement: the search is
+That run took 122.8 ms to find the two primes, which is the normal draw: the
+median at four threads is 114 ms and the mean 130 ms. An earlier run finished
+the search in 73.9 ms and reported a round trip of 82.8 ms, but it had spent
+58 Miller-Rabin tests against a mean of 116, so it was luck rather than a
+figure to quote. The spread is not noise in the measurement: the search is
 memoryless, so the time to one prime is exponential and the time to a pair is
-Erlang-2, whose standard deviation is 71% of its mean.
+Erlang-2, whose standard deviation is 71% of its mean. Expect a round trip
+between 90 and 150 ms, around 125 ms most of the time.
 
 Nothing is printed between the first line of the client and the answer. The
 keys and the ciphertext are written after the clock stops, because a terminal
 takes tens of milliseconds to swallow four thousand digits and that would sit
 inside the number the assignment asks for. An earlier capture showed exactly
-that: 14.6 ms spent printing Bob's modulus before the message went out, and
-36 ms printing Alice's own key before her answer was read.
+that: 14.6 ms spent printing Bob's modulus before the message went out, 36 ms
+printing Alice's own key before her answer was read, and 64.6 ms before she
+picked up Bob's sentence. The three gaps are 0.5, 0.5 and 14.0 ms now, the
+last one being real work.
 
 ## License
 
