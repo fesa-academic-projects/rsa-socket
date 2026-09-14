@@ -49,7 +49,7 @@ Alice is the client, Bob is the server, port 1300.
 | `python/bench.py` | what each idea in the search is worth |
 | `python/attack.py` | breaks the parameter choices we did not make |
 | `python/test_all.py` | end to end test |
-| `original/` | the class files, untouched |
+| `original/` | the handout and the class files, untouched |
 | `captures/` | Wireshark evidence |
 
 ## Building and running
