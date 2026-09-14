@@ -83,7 +83,18 @@ print(
 print(f"  answer round     {(t_reply - t_key) * 1000:8.1f} ms")
 print(f"  decrypt (CRT)    {(T1 - t_reply) * 1000:8.1f} ms")
 
-# Everything below is evidence, printed with the clock already stopped.
+# Bob's turn: Alice runs the same service for him.
+_, incoming = wire.recv_frame(clientSocket, wire.MESSAGE)
+received = key.decrypt(incoming).decode("utf-8")
+wire.send_frame(
+    clientSocket, wire.REPLY, rsa.encrypt(blob, received.upper().encode("utf-8"))
+)
+print("Received From Server: ", received)
+print("Sent back to Server: ", received.upper())
+clientSocket.close()
+
+# Everything below is evidence. It comes last because Bob times his own
+# round trip, and printing four thousand digits would land inside it.
 print(f"\nBob's public key: e = {bob_e}, n = {len(bob_n) * 8} bits")
 print(f"  n = {int.from_bytes(bob_n, 'big')}")
 
@@ -97,17 +108,5 @@ print(f"\nSent to Server (encrypted, {len(payload)} bytes):")
 print(f"  {payload[:16].hex(' ')} ... {payload[-16:].hex(' ')}")
 print(f"Received from Server (encrypted, {len(answer)} bytes):")
 print(f"  {answer[:16].hex(' ')} ... {answer[-16:].hex(' ')}")
-
-# Bob's turn: Alice runs the same service for him.
-_, incoming = wire.recv_frame(clientSocket, wire.MESSAGE)
-received = key.decrypt(incoming).decode("utf-8")
-print(f"\nReceived from Server (encrypted, {len(incoming)} bytes):")
+print(f"Received from Server (encrypted, {len(incoming)} bytes):")
 print(f"  {incoming[:16].hex(' ')} ... {incoming[-16:].hex(' ')}")
-print("Received From Server: ", received)
-
-wire.send_frame(
-    clientSocket, wire.REPLY, rsa.encrypt(blob, received.upper().encode("utf-8"))
-)
-print("Sent back to Server: ", received.upper())
-
-clientSocket.close()
